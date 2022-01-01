@@ -1,0 +1,4 @@
+[console_scripts]
+jupyter-execute = nbclient.cli:execute
+jupyter-run = nbclient.cli:run
+
