@@ -31,7 +31,6 @@ class ModelConfig:
     num_groups: int = 100
     num_tags: int = 2
     social_network: bool = False
-    migrate: bool = False
     trust_threshold: float = 0
     mutation_prob: float = 0
     max_group_size: int = 1000
@@ -223,7 +222,7 @@ class MigrationModel(Model):
         # reset all logs that might change in each timestep
         self.log.reset_timestep_logs(self.tags.keys(), len(self.groups))
 
-        # ask all the agents to move to the next step
+        # ask all the agents to take their actions for this timestep
         self.schedule.step()
 
         # Update the groups' status once all agents have made their move
@@ -248,9 +247,8 @@ class MigrationModel(Model):
             for tag, trust in agent.status.trust_in_tags.items():
                 tag_trusts[tag] += trust
 
-            # attempt migration only if the model allows migration.
-            if self.config.migrate:
-                agent.attempt_migration()
+            # attempt migration 
+            agent.attempt_migration()
 
             # now, update the log
             self.log.update_with_agent_status(agent)
@@ -579,7 +577,6 @@ class Group(Agent):
         self.percent_cooperators = (self.num_cooperators * 100) / len(self.members)
 
         group_size = len(self.members)
-        migrate = self.model.config.migrate
         payoff_calculator = self.model.payoff_calculator
 
         min_payoff, max_payoff = self.model.payoff_range_calculator(len(self.members))
@@ -598,12 +595,9 @@ class Group(Agent):
             temp_payoff = payoff_c if agent.status.move else payoff_d
 
             # Normalize the payoff
-            if migrate:
-                agent.status.payoff = (temp_payoff - min_payoff) / (
-                    max_payoff - min_payoff
-                )
-            else:
-                agent.status.payoff = temp_payoff
+            agent.status.payoff = (temp_payoff - min_payoff) / (
+                max_payoff - min_payoff
+            )
 
             # update the trust values
             agent.update_trust(self.tag_counter)

@@ -144,9 +144,9 @@ def parse_arguments():
         required=True,
     )
     parser.add_argument(
-        "--migrate",
-        help="whether agents can migrate or not",
-        type=bool,
+        "--migration_strategy",
+        help="method used by agents to select migration destination (no_migration, random, proportional_trust, most_trusted_group)",
+        type=str,
         required=True,
     )
     parser.add_argument(
@@ -164,12 +164,12 @@ def parse_arguments():
     return args
 
 
-def save_tag_data(datacollector, timesteps_to_save, tags, groups, fname):
+def save_tag_data(datacollector, timesteps_to_save, tags, groups, fname, idx):
     """Save the data about the tags in the model."""
 
     # multi-index
-    index_tuples = [(a, b) for a in tags for b in timesteps_to_save]
-    index = pd.MultiIndex.from_tuples(index_tuples, names=["tag", "timestep"])
+    index_tuples = [(*idx[0], a, b) for a in tags for b in timesteps_to_save]
+    index = pd.MultiIndex.from_tuples(index_tuples, names=idx[1] + ["tag", "timestep"])
 
     # create multi-indexed dataframe for information about tags
     tag_df = datacollector.get_table_dataframe("tag")
@@ -185,34 +185,33 @@ def save_tag_data(datacollector, timesteps_to_save, tags, groups, fname):
     save_as_parquet_table(tag_group_df, fname, "tags_in_groups")
 
 
-def save_data(datacollector, timesteps_to_save, num_groups, migrate, fname):
+def save_data(datacollector, timesteps_to_save, num_groups, fname, idx):
     """Save the data about the model's stats."""
 
     # save the model data as one dataframe
     model_df = datacollector.get_model_vars_dataframe()
-    model_df.insert(0, "timestep", timesteps_to_save)
-    model_df = model_df.set_index("timestep")
+    model_df.index = pd.MultiIndex.from_tuples(((*idx[0], ts) for ts in timesteps_to_save), names=idx[1]+["timestep"])
     save_as_parquet_table(model_df, fname, "model")
 
     # multi-index
-    index_tuples = [(a, b) for a in range(num_groups) for b in timesteps_to_save]
-    index = pd.MultiIndex.from_tuples(index_tuples, names=["group", "timestep"])
+    index_tuples = [(*idx[0], a, b) for a in range(num_groups) for b in timesteps_to_save]
+    index = pd.MultiIndex.from_tuples(index_tuples, names=idx[1] + ["group", "timestep"])
 
     # group information
     group_df = datacollector.get_table_dataframe("group")
     group_info = np.array([y for x in range(num_groups) for y in group_df[x]])
-    columns = ["cooperators", "trustworthiness"]
-    if migrate:
-        columns[:0] = ["size"]
+    columns = ["size", "cooperators", "trustworthiness"]
 
     # save the group info as one dataframe
     group_df = pd.DataFrame(group_info, index=index, columns=columns)
     save_as_parquet_table(group_df, fname, "group")
 
 
-def save_agent_info(agents, fname):
+def save_agent_info(agents, fname, idx):
     """Save information about the agents to a datafame."""
     agent_df = pd.DataFrame([x.as_dict() for x in agents])
+    agent_df = agent_df.set_index('id')
+    agent_df.index = pd.MultiIndex.from_tuples(((*idx[0], i) for i in agent_df.index), names=idx[1]+['id'])
     save_as_parquet_table(agent_df, fname, "agents")
 
 
@@ -254,7 +253,7 @@ def setup_model(config):
     )
 
     # do some setup for each agent in the model
-    migration_strategy = MigrationStrategy(MigrationMethod.GROUP_TRUST)
+    migration_strategy = MigrationStrategy(MigrationMethod(config['migration_strategy']))
     for agent in model.schedule.agents:
         # [MIGRATION STRATEGY]
         # we assign the same migration strategy to each agent.
@@ -284,12 +283,15 @@ def run_model(**kwargs):
 
     # save the model data as one dataframe
     output_dir = Path(kwargs["output_dir"])
+    idx_keys = ['migration_strategy', 'cost', 'num_groups', 'num_tags', 'trust_threshold', 'migration_wait_period']
+    idx_values = tuple(kwargs[k] for k in idx_keys)
+    idx_names = ['ms', 'c', 'ng', 'nt', 'th', 'mwp']
     save_data(
         datacollector=model.datacollector,
         timesteps_to_save=timesteps_to_save,
         num_groups=kwargs["num_groups"],
-        migrate=kwargs["migrate"],
         fname=output_dir / process_name,
+        idx=(idx_values, idx_names)
     )
     save_tag_data(
         datacollector=model.datacollector,
@@ -297,10 +299,11 @@ def run_model(**kwargs):
         tags=model.tags.keys(),
         groups=[g.unique_id for g in model.groups],
         fname=output_dir / process_name,
+        idx=(idx_values, idx_names)
     )
 
     ## save final status of agents
-    save_agent_info(model.schedule.agents, output_dir / process_name)
+    save_agent_info(model.schedule.agents, output_dir / process_name, idx=(idx_values, idx_names))
 
     print("done", process_name)
 
@@ -335,6 +338,9 @@ def update_trust_in_tag(
 class MigrationMethod(Enum):
     """The migration method used by the agents."""
 
+    # No Migration
+    NO_MIGRATION = "no_migration"
+
     # Random Migration
     RANDOM = "random"
 
@@ -342,10 +348,13 @@ class MigrationMethod(Enum):
     PAYOFF = "payoff_based"
 
     # Based on trust in the group
-    GROUP_TRUST = "group_trust_based"
+    PROPORTIONAL_GROUP_TRUST = "proportional_group_trust"
 
     # Based on trust in a social connection
-    INDIVIDUAL_TRUST = "individual_trust_based"
+    MOST_TRUSTED_AGENT = "most_trusted_agent"
+
+    # most trusted group
+    MOST_TRUSTED_GROUP = "most_trusted_group"
 
 
 # pylint: disable=too-few-public-methods
@@ -357,7 +366,8 @@ class MigrationStrategy:
 
         self._destination_selectors = {
             MigrationMethod.RANDOM: self._random,
-            MigrationMethod.GROUP_TRUST: self._group_trust,
+            MigrationMethod.PROPORTIONAL_GROUP_TRUST: self._proportional_group_trust,
+            MigrationMethod.MOST_TRUSTED_GROUP: self._most_trusted_group,
         }
 
     def get_migration_destination(
@@ -383,6 +393,12 @@ class MigrationStrategy:
         """
 
         return self._destination_selectors[self.method](agent)
+
+    @staticmethod
+    def _no_migration(agent: MigrationAgent) -> Union[Group, None]:
+        """Do not migrate. So return None"""
+
+        return None
 
     @staticmethod
     def _random(agent: MigrationAgent) -> Union[Group, None]:
@@ -416,7 +432,7 @@ class MigrationStrategy:
         return dest
 
     @staticmethod
-    def _group_trust(agent: MigrationAgent) -> Union[Group, None]:
+    def _proportional_group_trust(agent: MigrationAgent) -> Union[Group, None]:
         """Select a migration destination based on an agent's trust in an entire group.
 
         Parameters
@@ -450,6 +466,20 @@ class MigrationStrategy:
             )
         )
         return dest if random() < fermi_prob else None
+
+    @staticmethod
+    def _most_trusted_group(agent: MigrationAgent) -> Union[Group, None]:
+        options = agent.get_migration_options()
+        if len(options) == 0:
+            return None
+
+        most_trusted = max(options, key=lambda g: agent.trust_in_group(g))
+
+        # check whether the group is accepting new members
+        if not most_trusted.is_accepting_new_members():
+            return None
+
+        return most_trusted
 
 
 if __name__ == "__main__":

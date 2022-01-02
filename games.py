@@ -4,9 +4,6 @@ from math import ceil
 from enum import Enum
 
 
-# TODO: complete
-
-
 class GameType(Enum):
     """Enum for different types of dilemma games"""
 
