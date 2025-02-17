@@ -1,6 +1,7 @@
 # Agent-based model
 
-Scripts to run an agent-based model simulation of cooperation and trust with tags for migration decisions.
+Scripts to run an agent-based model simulation of cooperation and trust with tags for migration decisions. The results of this study have been published in the journal _Royal Society Open Science_.\
+Dhakal S, Chiong R, Chica M, Han TA. 2022 Evolution of cooperation and trust in an N-player social dilemma game with tags for migration decisions. _R. Soc. Open Sci._ **9**: 212000. https://doi.org/10.1098/rsos.212000
 
 ## Installation
 
